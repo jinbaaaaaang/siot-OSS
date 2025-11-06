@@ -34,7 +34,7 @@ elif _env_model_type:
 else:
     # 환경 변수가 없으면 GPU 여부에 따라 자동 선택
     if _is_gpu_available():
-    MODEL_TYPE = "solar"
+        MODEL_TYPE = "solar"
         print(f"[poem_config] ✅ GPU 감지됨 → SOLAR 모델 자동 선택 (고품질)")
     else:
         MODEL_TYPE = "kogpt2"
