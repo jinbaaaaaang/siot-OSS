@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-from typing import List, Optional
+from typing import List, Optional, Dict
 import time
 import asyncio
 import concurrent.futures
 from pathlib import Path
+import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -22,6 +23,18 @@ from app.services.keyword_extractor import extract_keywords
 from app.services.emotion_classifier import classify_emotion
 from app.services.poem_generator import generate_poem_from_keywords
 from app.services.poem_model_loader import _load_poem_model
+
+# 학습된 모델 사용을 위한 import
+import sys
+from pathlib import Path
+backend_path = Path(__file__).parent.parent
+sys.path.insert(0, str(backend_path))
+try:
+    from use_trained_model import load_trained_model, generate_poem_from_prose
+    HAS_TRAINED_MODEL = True
+except ImportError:
+    HAS_TRAINED_MODEL = False
+    print("⚠️ 학습된 모델 모듈을 로드할 수 없습니다.")
 
 app = FastAPI(title="Poem API (SOLAR Instruct, Colab GPU)")
 
@@ -68,6 +81,9 @@ class PoemRequest(BaseModel):
     use_rhyme: Optional[bool] = False  # 두운/두행두운 운율 사용 여부
     acrostic: Optional[str] = None  # 아크로스틱 (예: "사랑해")
     model_type: Optional[str] = None  # 모델 타입: "solar" (GPU) 또는 "kogpt2" (CPU)
+    use_trained_model: Optional[bool] = False  # 학습된 모델 사용 여부
+    trained_model_path: Optional[str] = None  # 학습된 모델 경로 (None이면 자동 검색)
+    use_gemini_improvement: Optional[bool] = True  # Gemini API로 시 개선 사용 여부 (기본값: True)
 
 class PoemResponse(BaseModel):
     keywords: List[str]
@@ -76,6 +92,16 @@ class PoemResponse(BaseModel):
     poem: str
     success: bool
     message: Optional[str] = None
+
+class EmotionAnalysisRequest(BaseModel):
+    poems: List[Dict]  # 시 목록 (emotion, createdAt 등 포함)
+
+class EmotionAnalysisResponse(BaseModel):
+    story: str  # 귀여운 감정 추이 스토리
+    summary: str  # 감정 요약
+    emoji: str  # 대표 이모지
+    message: str  # 귀여운 메시지
+    success: bool
 
 @app.get("/health")
 def health():
@@ -160,28 +186,124 @@ async def generate_poem_from_text(request: PoemRequest):
 
     # 3) 시 생성 (스레드 실행 + 타임아웃)
     print("[API] 3단계: 시 생성 시작...", flush=True)
+    
+    # 학습된 모델 사용 여부 확인
+    use_trained = request.use_trained_model and HAS_TRAINED_MODEL
+    
+    if use_trained:
+        print("[API] 학습된 모델 사용 모드", flush=True)
+        # 학습된 모델 경로 찾기
+        trained_model_path = request.trained_model_path
+        if not trained_model_path:
+            # 자동으로 trained_models 폴더에서 찾기
+            backend_path = Path(__file__).parent.parent
+            trained_models_dir = backend_path / "trained_models"
+            if trained_models_dir.exists():
+                # 20251109_08로 시작하는 모델 찾기
+                model_folders = [f for f in trained_models_dir.iterdir() 
+                                if f.is_dir() and "20251109_08" in f.name and "kogpt2" in f.name.lower()]
+                if model_folders:
+                    # 가장 최신 모델 선택 (이름으로 정렬)
+                    trained_model_path = str(sorted(model_folders, key=lambda x: x.name, reverse=True)[0])
+                    print(f"[API] 자동으로 학습된 모델 찾음: {trained_model_path}", flush=True)
+                else:
+                    print("[API] ⚠️ 학습된 모델을 찾을 수 없습니다. 기본 모델 사용", flush=True)
+                    use_trained = False
+            else:
+                print("[API] ⚠️ trained_models 폴더가 없습니다. 기본 모델 사용", flush=True)
+                use_trained = False
+    
     loop = asyncio.get_event_loop()
     try:
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # 속도 최적화: max_new_tokens를 줄여서 생성 시간 단축 (80토큰으로 설정)
-            # 원본 텍스트도 전달하여 맥락 반영
-            print("[API] 시 생성 함수 호출 중... (속도 최적화: 80토큰)", flush=True)
-            poem = await asyncio.wait_for(
-                loop.run_in_executor(
-                    executor, 
-                    generate_poem_from_keywords, 
-                    final_keywords, 
-                    mood, 
-                    lines, 
-                    80, 
-                    text,
-                    request.banned_words,
-                    request.use_rhyme,
-                    request.acrostic,
-                    request.model_type  # 모델 타입 전달
-                ),
-                timeout=300.0  # 5분 타임아웃 (첫 요청 시 모델 로딩 + 생성 + 번역 시간 포함)
-            )
+            if use_trained and trained_model_path:
+                # 학습된 모델 사용
+                print(f"[API] 학습된 모델로 시 생성 중... (경로: {trained_model_path})", flush=True)
+                
+                def generate_with_trained_model():
+                    # 모델 로드 (캐시 가능하도록 전역 변수 사용)
+                    if not hasattr(generate_with_trained_model, '_tokenizer') or \
+                       not hasattr(generate_with_trained_model, '_model') or \
+                       not hasattr(generate_with_trained_model, '_device') or \
+                       getattr(generate_with_trained_model, '_model_path', None) != trained_model_path:
+                        print(f"[API] 학습된 모델 로딩 중...", flush=True)
+                        tokenizer, model, device = load_trained_model(trained_model_path)
+                        generate_with_trained_model._tokenizer = tokenizer
+                        generate_with_trained_model._model = model
+                        generate_with_trained_model._device = device
+                        generate_with_trained_model._model_path = trained_model_path
+                        print(f"[API] 학습된 모델 로딩 완료", flush=True)
+                    
+                    # 학습된 모델로 시 생성 (산문을 직접 입력)
+                    raw_poem = generate_poem_from_prose(
+                        text,  # 원본 텍스트를 산문으로 사용
+                        generate_with_trained_model._tokenizer,
+                        generate_with_trained_model._model,
+                        generate_with_trained_model._device,
+                        max_new_tokens=150  # 시 길이 조절: 100 → 150 (적당한 길이의 시 생성)
+                    )
+                    
+                    # Gemini API로 시 개선 (프롬프트 옵션이 설정된 경우에만)
+                    # 프롬프트 옵션: lines, mood, required_keywords, banned_words, use_rhyme, acrostic
+                    # 프롬프트 옵션이 실제로 설정되었는지 확인
+                    has_prompt_options = (
+                        (request.lines is not None and request.lines != 4) or  # 기본값 4가 아닌 경우만
+                        (request.mood is not None and request.mood.strip() != '') or  # 분위기 설정
+                        (request.required_keywords is not None and len(request.required_keywords) > 0) or  # 필수 키워드
+                        (request.banned_words is not None and len(request.banned_words) > 0) or  # 금칙어
+                        (request.use_rhyme is True) or  # 운율 사용
+                        (request.acrostic is not None and request.acrostic.strip() != '')  # 아크로스틱
+                    )
+                    
+                    print(f"[API] 프롬프트 옵션 체크: lines={request.lines}, mood={request.mood}, required_keywords={request.required_keywords}, banned_words={request.banned_words}, use_rhyme={request.use_rhyme}, acrostic={request.acrostic}", flush=True)
+                    print(f"[API] has_prompt_options={has_prompt_options}, use_gemini_improvement={request.use_gemini_improvement}", flush=True)
+                    
+                    # 프롬프트 옵션이 있고, use_gemini_improvement가 False가 아닌 경우에만 개선
+                    if has_prompt_options and request.use_gemini_improvement is not False:
+                        try:
+                            print(f"[API] 프롬프트 옵션 적용됨 → Gemini로 시 개선 시작", flush=True)
+                            improved_poem = improve_poem_with_gemini(raw_poem, text)
+                            if improved_poem and improved_poem != raw_poem:
+                                print(f"[API] ✓ Gemini 개선 완료: 원본 {len(raw_poem)}자 → 개선 {len(improved_poem)}자", flush=True)
+                                return improved_poem
+                            else:
+                                print(f"[API] ⚠️ Gemini 개선 결과가 원본과 동일하거나 비어있음. 원본 반환", flush=True)
+                                return raw_poem
+                        except Exception as e:
+                            print(f"[API] ❌ Gemini 시 개선 실패, 원본 사용: {e}", flush=True)
+                            import traceback
+                            traceback.print_exc()
+                            return raw_poem
+                    else:
+                        if has_prompt_options:
+                            print(f"[API] 프롬프트 옵션 적용됨, 하지만 Gemini 개선 비활성화 (use_gemini_improvement={request.use_gemini_improvement})", flush=True)
+                        else:
+                            print(f"[API] 프롬프트 옵션 없음 → Gemini 개선 생략 (원본 시 반환)", flush=True)
+                        return raw_poem
+                
+                poem = await asyncio.wait_for(
+                    loop.run_in_executor(executor, generate_with_trained_model),
+                    timeout=300.0
+                )
+            else:
+                # 기본 모델 사용
+                print("[API] 기본 모델로 시 생성 중... (속도 최적화: 80토큰)", flush=True)
+                poem = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        executor, 
+                        generate_poem_from_keywords, 
+                        final_keywords, 
+                        mood, 
+                        lines, 
+                        80, 
+                        text,
+                        request.banned_words,
+                        request.use_rhyme,
+                        request.acrostic,
+                        request.model_type  # 모델 타입 전달
+                    ),
+                    timeout=300.0  # 5분 타임아웃 (첫 요청 시 모델 로딩 + 생성 + 번역 시간 포함)
+                )
         print(f"[API] ✓ 시 생성 완료 (길이 {len(poem)}자)", flush=True)
     except asyncio.TimeoutError:
         print("[API] ❌ 타임아웃(>300s)", flush=True)
@@ -227,3 +349,303 @@ async def generate_poem_from_text(request: PoemRequest):
         success=True,
         message="시가 성공적으로 생성되었습니다.",
     )
+
+def improve_poem_with_gemini(raw_poem: str, original_prose: str = "") -> str:
+    """
+    Gemini API를 사용하여 koGPT2로 생성한 시를 개선합니다.
+    - 불필요한 텍스트 제거 (뉴스 스타일 문장 등)
+    - 산문 필터링
+    - 줄바꿈 개선
+    - 시적 표현 개선
+    """
+    try:
+        import google.generativeai as genai
+        
+        # API 키 확인
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("[Gemini] ⚠️ GEMINI_API_KEY가 설정되지 않았습니다. 원본 시 반환")
+            return raw_poem
+        
+        genai.configure(api_key=api_key)
+        
+        # 사용 가능한 모델 찾기
+        try:
+            print("[Gemini] 사용 가능한 모델 목록 확인 중...", flush=True)
+            available_models = []
+            for model_info in genai.list_models():
+                if 'generateContent' in model_info.supported_generation_methods:
+                    available_models.append(model_info.name)
+            
+            print(f"[Gemini] 사용 가능한 모델 {len(available_models)}개 발견", flush=True)
+            
+            preferred_models = [
+                'models/gemini-2.5-flash',
+                'models/gemini-2.5-flash-lite-preview-06-17',
+                'models/gemini-1.5-flash',
+                'models/gemini-1.5-pro',
+                'models/gemini-pro',
+            ]
+            
+            model = None
+            selected_model_name = None
+            for model_name in preferred_models:
+                if model_name in available_models:
+                    try:
+                        model = genai.GenerativeModel(model_name)
+                        selected_model_name = model_name
+                        print(f"[Gemini] 모델 로드 성공: {model_name}", flush=True)
+                        break
+                    except Exception as e:
+                        print(f"[Gemini] 모델 {model_name} 로드 실패: {e}", flush=True)
+                        continue
+            
+            if model is None and available_models:
+                selected_model_name = available_models[0]
+                model = genai.GenerativeModel(selected_model_name)
+                print(f"[Gemini] 대체 모델 사용: {selected_model_name}", flush=True)
+            elif model is None:
+                print("[Gemini] 사용 가능한 모델을 찾을 수 없습니다. 원본 시 반환", flush=True)
+                return raw_poem
+        except Exception as e:
+            print(f"[Gemini] 모델 로드 실패: {e}, 원본 시 반환", flush=True)
+            import traceback
+            traceback.print_exc()
+            return raw_poem
+        
+        # 프롬프트 생성 (불필요한 텍스트 제거 및 시적 표현 개선)
+        prompt = f"""다음은 AI가 생성한 한국어 시입니다. 이 시를 개선해주세요.
+
+원본 산문 (참고용):
+{original_prose[:200] if original_prose else "없음"}
+
+생성된 시:
+{raw_poem}
+
+다음 작업을 수행해주세요:
+1. 불필요한 텍스트 제거 (뉴스 스타일 문장, 설명문 등)
+2. "시:", "산문:" 같은 프롬프트 패턴 제거
+3. 적절한 줄바꿈 유지 (문장 끝과 쉼표 뒤)
+4. 시적 표현 개선 (자연스럽고 아름다운 표현으로 다듬기)
+
+중요: 시의 주제와 핵심 의미는 유지하되, 표현을 더 시답게 개선해주세요.
+
+개선된 시만 출력해주세요. 설명이나 추가 텍스트 없이 시만 출력하세요.
+"""
+        
+        print(f"[Gemini] 프롬프트 전송 중... (원본 시 길이: {len(raw_poem)}자)", flush=True)
+        response = model.generate_content(prompt)
+        
+        # 응답 파싱 (다양한 형식 지원)
+        improved_poem = ""
+        if hasattr(response, 'text'):
+            improved_poem = response.text.strip()
+        elif hasattr(response, 'candidates') and len(response.candidates) > 0:
+            if hasattr(response.candidates[0], 'content'):
+                if hasattr(response.candidates[0].content, 'parts'):
+                    improved_poem = ''.join([part.text for part in response.candidates[0].content.parts if hasattr(part, 'text')]).strip()
+        
+        print(f"[Gemini] 응답 받음: {len(improved_poem)}자", flush=True)
+        if improved_poem:
+            print(f"[Gemini] 응답 미리보기 (처음 100자): {improved_poem[:100]}", flush=True)
+        
+        # 결과 검증
+        if improved_poem and len(improved_poem) > 10:
+            print(f"[Gemini] 시 개선 완료: {len(raw_poem)}자 → {len(improved_poem)}자", flush=True)
+            return improved_poem
+        else:
+            print(f"[Gemini] 개선 결과가 비어있거나 너무 짧음 ({len(improved_poem)}자). 원본 시 반환", flush=True)
+            return raw_poem
+        
+    except Exception as e:
+        print(f"[Gemini] 시 개선 중 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
+        return raw_poem  # 오류 발생 시 원본 반환
+
+def analyze_emotions_cutely(poems: List[Dict]) -> Dict[str, str]:
+    """
+    Gemini API를 사용하여 감정 데이터를 귀여운 스토리로 변환합니다.
+    """
+    try:
+        import google.generativeai as genai
+        
+        # API 키 확인
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("[Gemini] ⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
+            return {
+                "story": "감정 분석을 위해 Gemini API 키를 설정해주세요.",
+                "summary": "API 키가 필요합니다.",
+                "emoji": "🔑",
+                "message": "설정에서 API 키를 추가해주세요.",
+                "success": False
+            }
+        
+        genai.configure(api_key=api_key)
+        
+        # 사용 가능한 모델 목록 확인 및 적절한 모델 선택
+        try:
+            # 먼저 사용 가능한 모델 목록 확인
+            available_models = []
+            for model_info in genai.list_models():
+                if 'generateContent' in model_info.supported_generation_methods:
+                    available_models.append(model_info.name)
+            
+            print(f"[Gemini] 사용 가능한 모델: {available_models[:5]}")  # 처음 5개만 출력
+            
+            # 우선순위: 안정적인 모델부터 시도
+            preferred_models = [
+                'models/gemini-2.5-flash',  # 가장 안정적인 최신 모델
+                'models/gemini-2.5-flash-lite-preview-06-17',
+                'models/gemini-1.5-flash',
+                'models/gemini-1.5-pro',
+                'models/gemini-pro',
+            ]
+            
+            model = None
+            # 우선순위 모델 시도
+            for model_name in preferred_models:
+                if model_name in available_models:
+                    try:
+                        model = genai.GenerativeModel(model_name)
+                        print(f"[Gemini] 모델 로드 성공: {model_name}")
+                        break
+                    except Exception as e:
+                        print(f"[Gemini] 모델 {model_name} 시도 실패: {e}")
+                        continue
+            
+            # 우선순위 모델이 모두 실패하면 사용 가능한 모델 중 첫 번째 사용
+            if model is None:
+                if available_models:
+                    # 'models/gemini-xxx' 형식에서 'gemini-xxx'만 추출
+                    first_model = available_models[0]
+                    print(f"[Gemini] 사용 가능한 첫 번째 모델 사용: {first_model}")
+                    model = genai.GenerativeModel(first_model)
+                else:
+                    raise Exception("사용 가능한 모델을 찾을 수 없습니다.")
+                    
+        except Exception as e:
+            print(f"[Gemini] 모델 목록 확인 실패, 기본 모델 시도: {e}")
+            # 기본 모델 시도 (fallback)
+            try:
+                model = genai.GenerativeModel('models/gemini-2.5-flash')
+            except:
+                try:
+                    model = genai.GenerativeModel('models/gemini-1.5-flash')
+                except:
+                    raise Exception(f"모델을 로드할 수 없습니다. 오류: {e}")
+        
+        # 감정 데이터 정리
+        emotion_data = {}
+        for poem in poems:
+            if not poem.get('emotion') or not poem.get('createdAt'):
+                continue
+            emotion = poem['emotion']
+            date = poem['createdAt'][:10]  # YYYY-MM-DD
+            
+            if date not in emotion_data:
+                emotion_data[date] = {}
+            emotion_data[date][emotion] = emotion_data[date].get(emotion, 0) + 1
+        
+        # 감정별 총 개수
+        emotion_counts = {}
+        for poem in poems:
+            if poem.get('emotion'):
+                emotion = poem['emotion']
+                emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+        
+        # 프롬프트 생성
+        prompt = f"""당신은 감정 분석 전문가입니다. 다음 감정 데이터를 자연스럽고 따뜻한 톤으로 분석해주세요.
+
+감정 데이터:
+{emotion_data}
+
+감정별 개수:
+{emotion_counts}
+
+다음 형식으로 응답해주세요:
+
+1. 감정 추이 스토리 (100-150자): 날짜별 감정 변화를 자연스럽게 설명해주세요. 예: "이번 주는 기쁨이 많이 나타났습니다. 월요일부터 기쁨이 증가하기 시작했고..."
+2. 감정 요약 (50-80자): 전체적인 감정 패턴을 간결하게 요약해주세요.
+3. 대표 이모지: 가장 많이 나타난 감정에 맞는 이모지 하나
+4. 따뜻한 메시지 (30-50자): 사용자에게 전하는 자연스러운 메시지
+
+주의사항:
+- 어린아이에게 하는 말투나 과도하게 귀여운 표현은 피해주세요
+- 자연스럽고 성숙한 톤을 유지해주세요
+- 따뜻하지만 전문적인 느낌을 주세요
+
+형식:
+스토리: [여기에 스토리]
+요약: [여기에 요약]
+이모지: [여기에 이모지]
+메시지: [여기에 메시지]
+"""
+        
+        response = model.generate_content(prompt)
+        result_text = response.text
+        
+        # 응답 파싱
+        story = ""
+        summary = ""
+        emoji = "💭"
+        message = ""
+        
+        lines = result_text.split('\n')
+        for line in lines:
+            if line.startswith('스토리:'):
+                story = line.replace('스토리:', '').strip()
+            elif line.startswith('요약:'):
+                summary = line.replace('요약:', '').strip()
+            elif line.startswith('이모지:'):
+                emoji = line.replace('이모지:', '').strip()
+            elif line.startswith('메시지:'):
+                message = line.replace('메시지:', '').strip()
+        
+        # 파싱 실패 시 기본값
+        if not story:
+            story = result_text[:150] if result_text else "감정 데이터를 분석했어요!"
+        if not summary:
+            summary = "감정 변화를 확인했어요."
+        if not message:
+            message = "오늘도 수고하셨어요!"
+        
+        return {
+            "story": story,
+            "summary": summary,
+            "emoji": emoji,
+            "message": message,
+            "success": True
+        }
+        
+    except Exception as e:
+        print(f"[Gemini] ❌ 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "story": "감정 분석 중 오류가 발생했어요. 다시 시도해주세요.",
+            "summary": "오류 발생",
+            "emoji": "😢",
+            "message": "잠시 후 다시 시도해주세요.",
+            "success": False
+        }
+
+@app.post("/api/emotion/analyze-cute", response_model=EmotionAnalysisResponse)
+async def analyze_emotions_cutely_endpoint(request: EmotionAnalysisRequest):
+    """
+    감정 데이터를 받아서 Gemini API로 귀여운 스토리로 변환합니다.
+    """
+    print("\n" + "="*80)
+    print("[API] /api/emotion/analyze-cute 진입")
+    print(f"[API] 시 개수: {len(request.poems)}개")
+    
+    if not request.poems:
+        raise HTTPException(status_code=400, detail="시 데이터가 없습니다.")
+    
+    result = analyze_emotions_cutely(request.poems)
+    
+    print(f"[API] ✓ 감정 분석 완료")
+    print("="*80)
+    
+    return EmotionAnalysisResponse(**result)
