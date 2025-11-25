@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict
 import time
 import asyncio
 import concurrent.futures
 from pathlib import Path
 import os
+import sys
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -20,14 +20,13 @@ if env_path.exists():
     load_dotenv(env_path)
     print(f"[Config] .env 파일 로드됨: {env_path}")
 
+# 서비스 모듈 import
 from app.services.keyword_extractor import extract_keywords
 from app.services.emotion_classifier import classify_emotion
 from app.services.poem_generator import generate_poem_from_keywords
 from app.services.poem_model_loader import _load_poem_model
 
-# 학습된 모델 사용을 위한 import
-import sys
-from pathlib import Path
+# 학습된 모델 사용을 위한 import (koGPT2 + LoRA 등)
 backend_path = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_path))
 try:
@@ -37,32 +36,30 @@ except ImportError:
     HAS_TRAINED_MODEL = False
     print("⚠️ 학습된 모델 모듈을 로드할 수 없습니다.")
 
+# FastAPI 앱 생성
 app = FastAPI(
     title="Poem Generation API",
     description="SOLAR 모델을 사용한 시 생성 API (Colab GPU 지원)",
-    version="1.0.0"
+    version="1.0.0",
 )
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
 
 # CORS 설정
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    # ngrok 도메인은 동적으로 변경되므로 모든 origin 허용 (개발 환경)
-    # 프로덕션에서는 특정 도메인만 허용하도록 수정 필요
-    "*",  # ngrok 사용 시 모든 origin 허용
-    # 필요하면 프론트 배포 주소도 나중에 여기 추가
-    # "https://my-frontend-domain.com",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if "*" not in origins else ["*"],  # "*"가 있으면 모든 origin 허용
+    allow_origins=["*"],        # 모든 Origin 허용 (개발용)
     allow_credentials=True,
-    allow_methods=["*"],          # 모든 HTTP 메서드 허용 (GET, POST 등)
-    allow_headers=["*"],          # 모든 헤더 허용
-    expose_headers=["*"],
-    max_age=3600,  # preflight 캐시 시간
+    allow_methods=["*"],        # 모든 HTTP 메서드 허용
+    allow_headers=["*"],        # 모든 헤더 허용
 )
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 # OPTIONS 요청 명시적 처리 (CORS preflight)
 @app.options("/{full_path:path}")
@@ -76,59 +73,63 @@ async def options_handler(full_path: str):
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH",
             "Access-Control-Allow-Headers": "*",
             "Access-Control-Max-Age": "3600",
-        }
+        },
     )
+
 
 @app.on_event("startup")
 async def startup_event():
     """
     서버 시작 시 모델을 미리 로드합니다.
-    첫 요청 시 지연 시간을 줄이기 위해 사전 로딩합니다.
-    코랩 환경에서는 모델 다운로드가 오래 걸릴 수 있으므로 선택적으로 로딩합니다.
+    - 코랩에서는 첫 요청 시 로딩(다운로드 시간이 길기 때문)
+    - 로컬/서버 환경에서는 사전 로딩으로 첫 요청 지연 최소화
     """
-    # 코랩 환경 감지
     is_colab = os.path.exists("/content")
-    
+
     if is_colab:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("🌐 코랩 환경 감지: 모델 사전 로딩 건너뜀")
-        print("="*80)
+        print("=" * 80)
         print("💡 첫 요청 시 자동으로 모델이 로드됩니다.")
         print("   (모델 다운로드에 5-10분이 걸릴 수 있습니다)")
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
         return
-    
-    print("\n" + "="*80)
+
+    print("\n" + "=" * 80)
     print("🚀 서버 시작 중: 모델 사전 로딩 시작...")
-    print("="*80)
-    
+    print("=" * 80)
+
     try:
-        # 모델 로딩 (백그라운드 스레드에서 실행)
-        import concurrent.futures
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as executor:
             await loop.run_in_executor(executor, _load_poem_model)
-        print("="*80)
+        print("=" * 80)
         print("✅ 모델 사전 로딩 완료! 첫 요청부터 빠르게 응답할 수 있습니다.")
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
     except Exception as e:
         print(f"⚠️ 모델 사전 로딩 실패: {e}")
         print("   (첫 요청 시 자동으로 로드됩니다.)\n")
         import traceback
         traceback.print_exc()
 
+
+# ============================
+# Pydantic 모델 정의
+# ============================
+
 class PoemRequest(BaseModel):
     text: str
-    lines: Optional[int] = None  # 줄 수 (행)
-    mood: Optional[str] = None  # 분위기 (잔잔/담담/쓸쓸)
+    lines: Optional[int] = None                 # 줄 수 (행)
+    mood: Optional[str] = None                  # 분위기 (잔잔/담담/쓸쓸)
     required_keywords: Optional[List[str]] = None  # 필수 키워드
-    banned_words: Optional[List[str]] = None  # 금칙어
-    use_rhyme: Optional[bool] = False  # 두운/두행두운 운율 사용 여부
-    acrostic: Optional[str] = None  # 아크로스틱 (예: "사랑해")
-    model_type: Optional[str] = None  # 모델 타입: "solar" (GPU) 또는 "kogpt2" (CPU)
-    use_trained_model: Optional[bool] = False  # 학습된 모델 사용 여부
-    trained_model_path: Optional[str] = None  # 학습된 모델 경로 (None이면 자동 검색)
-    use_gemini_improvement: Optional[bool] = True  # Gemini API로 시 개선 사용 여부 (기본값: True)
+    banned_words: Optional[List[str]] = None       # 금칙어
+    use_rhyme: Optional[bool] = False           # 운율 사용 여부
+    acrostic: Optional[str] = None              # 아크로스틱
+    model_type: Optional[str] = None            # "solar" 또는 "kogpt2"
+    use_trained_model: Optional[bool] = False   # 학습된 모델 사용 여부
+    trained_model_path: Optional[str] = None    # 학습된 모델 경로
+    use_gemini_improvement: Optional[bool] = True  # Gemini로 시 개선 여부
+
 
 class PoemResponse(BaseModel):
     keywords: List[str]
@@ -138,15 +139,22 @@ class PoemResponse(BaseModel):
     success: bool
     message: Optional[str] = None
 
+
 class EmotionAnalysisRequest(BaseModel):
     poems: List[Dict]  # 시 목록 (emotion, createdAt 등 포함)
 
+
 class EmotionAnalysisResponse(BaseModel):
-    story: str  # 귀여운 감정 추이 스토리
-    summary: str  # 감정 요약
-    emoji: str  # 대표 이모지
-    message: str  # 귀여운 메시지
+    story: str
+    summary: str
+    emoji: str
+    message: str
     success: bool
+
+
+# ============================
+# 기본 엔드포인트들
+# ============================
 
 @app.get("/")
 def root():
@@ -157,10 +165,11 @@ def root():
         "endpoints": {
             "health": "/health",
             "generate_poem": "/api/poem/generate",
-            "analyze_emotion": "/api/emotion/analyze-cute"
+            "analyze_emotion": "/api/emotion/analyze-cute",
         },
-        "docs": "/docs"
+        "docs": "/docs",
     }
+
 
 @app.get("/favicon.ico")
 def favicon():
@@ -168,16 +177,16 @@ def favicon():
     from fastapi.responses import Response
     return Response(status_code=204)  # No Content
 
+
 @app.get("/health")
 def health():
     from app.services.poem_config import MODEL_TYPE, GEN_MODEL_ID
     from app.services.poem_model_loader import _is_gpu, _device_info
-    
+
     device_info = _device_info()
     is_gpu = _is_gpu()
-    
     model_display = f"{MODEL_TYPE.upper()}" + (f" (GPU: {device_info})" if is_gpu else " (CPU)")
-    
+
     return {
         "ok": True,
         "service": "poem",
@@ -185,51 +194,55 @@ def health():
         "model_id": GEN_MODEL_ID,
         "device": device_info,
         "has_gpu": is_gpu,
-        "model": model_display
+        "model": model_display,
     }
+
+
+# ============================
+# 시 생성 엔드포인트
+# ============================
 
 @app.post("/api/poem/generate", response_model=PoemResponse)
 async def generate_poem_from_text(request: PoemRequest):
-    # CORS 헤더 명시적 추가 (ngrok 브라우저 경고 페이지 우회 시 필요)
-    from fastapi.responses import JSONResponse
     """
-    사용자의 일상글을 받아 키워드, 감정을 추출하고 시를 생성합니다.
-    - 키워드: TF-IDF
-    - 감정: XNLI 제로샷 (긍정/중립/부정 → 분위기 매핑)
-    - 시: SOLAR-10.7B-Instruct (4bit, chat 템플릿)
+    사용자의 일상글을 받아:
+      1) 키워드 추출 (TF-IDF)
+      2) 감정 분류 (XNLI 제로샷 기반)
+      3) 시 생성 (SOLAR / koGPT2 / 학습 모델)
+      4) (필요 시) 번역·개선
+    을 수행한 뒤 시를 반환합니다.
     """
     t0 = time.time()
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("[API] /api/poem/generate 진입")
 
-    # 요청 검증
+    # 0) 요청 검증
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=400, detail="텍스트가 비어있습니다.")
     text = request.text.strip()
     print(f"[API] 입력 길이: {len(text)}자")
 
-    # 1) 키워드 추출 (시 생성과 독립적으로 진행)
+    # 1) 키워드 추출
     print("[API] 1단계: 키워드 추출 시작...")
-    keywords = extract_keywords(text, max_keywords=10)  # 더 많은 키워드 추출
+    keywords = extract_keywords(text, max_keywords=10)
     print(f"[API] ✓ 키워드 추출 완료: {keywords}")
     print("=" * 60)
     print("📝 추출된 키워드:", keywords)
     print("=" * 60)
 
-    # 2) 감정 분류 (시 생성과 독립적으로 진행, 사용자가 분위기를 지정하지 않은 경우에만)
+    # 2) 감정 분류
     print("[API] 2단계: 감정 분류 시작...")
     emo = classify_emotion(text)
     emotion = emo.get("emotion", "중립")
     default_mood = emo.get("mood", "담담한")
     confidence = float(emo.get("confidence", 0.0))
-    
-    # 사용자가 지정한 분위기가 있으면 사용, 없으면 자동 분석 결과 사용
+
     mood = request.mood if request.mood else default_mood
     lines = request.lines if request.lines else 4
-    
+
     print(f"[API] ✓ 감정 분류 완료: 감정={emotion}, 분위기={mood}, 신뢰도={confidence:.3f}")
     print("=" * 60)
-    print(f"💭 감정 분석 결과:")
+    print("💭 감정 분석 결과:")
     print(f"   - 감정: {emotion}")
     print(f"   - 분위기: {mood} (사용자 지정: {request.mood is not None})")
     print(f"   - 신뢰도: {confidence:.3f}")
@@ -239,7 +252,7 @@ async def generate_poem_from_text(request: PoemRequest):
     if request.banned_words:
         print(f"   - 금칙어: {request.banned_words}")
     if request.use_rhyme:
-        print(f"   - 운율 사용: 예")
+        print("   - 운율 사용: 예")
     if request.acrostic:
         print(f"   - 아크로스틱: {request.acrostic}")
     print("=" * 60)
@@ -249,173 +262,231 @@ async def generate_poem_from_text(request: PoemRequest):
     if request.required_keywords:
         for kw in request.required_keywords:
             if kw not in final_keywords:
-                final_keywords.insert(0, kw)  # 필수 키워드를 앞에 추가
+                final_keywords.insert(0, kw)
 
-    # 3) 시 생성 (스레드 실행 + 타임아웃)
+    # 3) 시 생성 (기본 모델 or 학습된 모델)
     print("[API] 3단계: 시 생성 시작...", flush=True)
-    
-    # 학습된 모델 사용 여부 확인
+
     use_trained = request.use_trained_model and HAS_TRAINED_MODEL
-    
-    if use_trained:
-        print("[API] 학습된 모델 사용 모드", flush=True)
-        # 학습된 모델 경로 찾기
-        trained_model_path = request.trained_model_path
-        if not trained_model_path:
-            # 자동으로 trained_models 폴더에서 찾기
-            backend_path = Path(__file__).parent.parent
-            trained_models_dir = backend_path / "trained_models"
-            if trained_models_dir.exists():
-                # 20251109_08로 시작하는 모델 찾기
-                model_folders = [f for f in trained_models_dir.iterdir() 
-                                if f.is_dir() and "20251109_08" in f.name and "kogpt2" in f.name.lower()]
-                if model_folders:
-                    # 가장 최신 모델 선택 (이름으로 정렬)
-                    trained_model_path = str(sorted(model_folders, key=lambda x: x.name, reverse=True)[0])
-                    print(f"[API] 자동으로 학습된 모델 찾음: {trained_model_path}", flush=True)
-                else:
-                    print("[API] ⚠️ 학습된 모델을 찾을 수 없습니다. 기본 모델 사용", flush=True)
-                    use_trained = False
+    trained_model_path = request.trained_model_path
+
+    # 학습된 모델 경로 자동 탐색
+    if use_trained and not trained_model_path:
+        trained_models_dir = backend_path / "trained_models"
+        if trained_models_dir.exists():
+            model_folders = [
+                f
+                for f in trained_models_dir.iterdir()
+                if f.is_dir()
+                and "20251109_08" in f.name
+                and "kogpt2" in f.name.lower()
+            ]
+            if model_folders:
+                trained_model_path = str(
+                    sorted(model_folders, key=lambda x: x.name, reverse=True)[0]
+                )
+                print(f"[API] 자동으로 학습된 모델 찾음: {trained_model_path}", flush=True)
             else:
-                print("[API] ⚠️ trained_models 폴더가 없습니다. 기본 모델 사용", flush=True)
+                print("[API] ⚠️ 학습된 모델을 찾을 수 없습니다. 기본 모델 사용", flush=True)
                 use_trained = False
-    
+        else:
+            print("[API] ⚠️ trained_models 폴더가 없습니다. 기본 모델 사용", flush=True)
+            use_trained = False
+
     loop = asyncio.get_event_loop()
+
     try:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             if use_trained and trained_model_path:
-                # 학습된 모델 사용
-                print(f"[API] 학습된 모델로 시 생성 중... (경로: {trained_model_path})", flush=True)
-                
+                # =============================
+                # 3-A) 학습된 모델 사용 (koGPT2 + LoRA 등)
+                # =============================
+                print("[API] 학습된 모델 사용 모드", flush=True)
+
                 def generate_with_trained_model():
-                    # 모델 로드 (캐시 가능하도록 전역 변수 사용)
-                    if not hasattr(generate_with_trained_model, '_tokenizer') or \
-                       not hasattr(generate_with_trained_model, '_model') or \
-                       not hasattr(generate_with_trained_model, '_device') or \
-                       getattr(generate_with_trained_model, '_model_path', None) != trained_model_path:
-                        print(f"[API] 학습된 모델 로딩 중...", flush=True)
+                    # 캐시된 모델 사용 (없으면 로드)
+                    if (
+                        not hasattr(generate_with_trained_model, "_tokenizer")
+                        or not hasattr(generate_with_trained_model, "_model")
+                        or not hasattr(generate_with_trained_model, "_device")
+                        or getattr(
+                            generate_with_trained_model, "_model_path", None
+                        )
+                        != trained_model_path
+                    ):
+                        print("[API] 학습된 모델 로딩 중...", flush=True)
                         tokenizer, model, device = load_trained_model(trained_model_path)
                         generate_with_trained_model._tokenizer = tokenizer
                         generate_with_trained_model._model = model
                         generate_with_trained_model._device = device
                         generate_with_trained_model._model_path = trained_model_path
-                        print(f"[API] 학습된 모델 로딩 완료", flush=True)
-                    
-                    # 학습된 모델로 시 생성 (산문을 직접 입력)
+                        print("[API] 학습된 모델 로딩 완료", flush=True)
+
+                    # 산문 직접 입력 → 시 생성
                     raw_poem = generate_poem_from_prose(
-                        text,  # 원본 텍스트를 산문으로 사용
+                        text,
                         generate_with_trained_model._tokenizer,
                         generate_with_trained_model._model,
                         generate_with_trained_model._device,
-                        max_new_tokens=150  # 시 길이 조절: 100 → 150 (적당한 길이의 시 생성)
+                        max_new_tokens=150,
                     )
-                    
-                    # Gemini API로 시 개선 (프롬프트 옵션이 설정된 경우에만)
-                    # 프롬프트 옵션: lines, mood, required_keywords, banned_words, use_rhyme, acrostic
-                    # 프롬프트 옵션이 실제로 설정되었는지 확인
+
+                    # Gemini 개선 옵션 체크
                     has_prompt_options = (
-                        (request.lines is not None and request.lines != 4) or  # 기본값 4가 아닌 경우만
-                        (request.mood is not None and request.mood.strip() != '') or  # 분위기 설정
-                        (request.required_keywords is not None and len(request.required_keywords) > 0) or  # 필수 키워드
-                        (request.banned_words is not None and len(request.banned_words) > 0) or  # 금칙어
-                        (request.use_rhyme is True) or  # 운율 사용
-                        (request.acrostic is not None and request.acrostic.strip() != '')  # 아크로스틱
+                        (request.lines is not None and request.lines != 4)
+                        or (request.mood is not None and request.mood.strip() != "")
+                        or (
+                            request.required_keywords is not None
+                            and len(request.required_keywords) > 0
+                        )
+                        or (
+                            request.banned_words is not None
+                            and len(request.banned_words) > 0
+                        )
+                        or (request.use_rhyme is True)
+                        or (
+                            request.acrostic is not None
+                            and request.acrostic.strip() != ""
+                        )
                     )
-                    
-                    print(f"[API] 프롬프트 옵션 체크: lines={request.lines}, mood={request.mood}, required_keywords={request.required_keywords}, banned_words={request.banned_words}, use_rhyme={request.use_rhyme}, acrostic={request.acrostic}", flush=True)
-                    print(f"[API] has_prompt_options={has_prompt_options}, use_gemini_improvement={request.use_gemini_improvement}", flush=True)
-                    
-                    # 프롬프트 옵션이 있고, use_gemini_improvement가 False가 아닌 경우에만 개선
+
+                    print(
+                        "[API] 프롬프트 옵션 체크:",
+                        f"lines={request.lines}, mood={request.mood}, "
+                        f"required_keywords={request.required_keywords}, banned_words={request.banned_words}, "
+                        f"use_rhyme={request.use_rhyme}, acrostic={request.acrostic}",
+                        flush=True,
+                    )
+                    print(
+                        f"[API] has_prompt_options={has_prompt_options}, "
+                        f"use_gemini_improvement={request.use_gemini_improvement}",
+                        flush=True,
+                    )
+
+                    from app.main import improve_poem_with_gemini  # 순환 import 방지용 지연 import
+
                     if has_prompt_options and request.use_gemini_improvement is not False:
                         try:
-                            print(f"[API] 프롬프트 옵션 적용됨 → Gemini로 시 개선 시작", flush=True)
+                            print("[API] Gemini로 시 개선 시작", flush=True)
                             improved_poem = improve_poem_with_gemini(
-                                raw_poem, 
+                                raw_poem,
                                 text,
                                 lines=request.lines,
                                 mood=request.mood,
                                 required_keywords=request.required_keywords,
                                 banned_words=request.banned_words,
                                 use_rhyme=request.use_rhyme,
-                                acrostic=request.acrostic
+                                acrostic=request.acrostic,
                             )
                             if improved_poem and improved_poem != raw_poem:
-                                print(f"[API] ✓ Gemini 개선 완료: 원본 {len(raw_poem)}자 → 개선 {len(improved_poem)}자", flush=True)
+                                print(
+                                    f"[API] ✓ Gemini 개선 완료: 원본 {len(raw_poem)}자 → 개선 {len(improved_poem)}자",
+                                    flush=True,
+                                )
                                 return improved_poem
                             else:
-                                print(f"[API] ⚠️ Gemini 개선 결과가 원본과 동일하거나 비어있음. 원본 반환", flush=True)
+                                print(
+                                    "[API] ⚠️ Gemini 개선 결과가 원본과 동일하거나 비어있음. 원본 반환",
+                                    flush=True,
+                                )
                                 return raw_poem
                         except Exception as e:
                             print(f"[API] ❌ Gemini 시 개선 실패, 원본 사용: {e}", flush=True)
                             import traceback
+
                             traceback.print_exc()
                             return raw_poem
                     else:
                         if has_prompt_options:
-                            print(f"[API] 프롬프트 옵션 적용됨, 하지만 Gemini 개선 비활성화 (use_gemini_improvement={request.use_gemini_improvement})", flush=True)
+                            print(
+                                "[API] 프롬프트 옵션은 있으나 Gemini 개선 비활성화",
+                                flush=True,
+                            )
                         else:
-                            print(f"[API] 프롬프트 옵션 없음 → Gemini 개선 생략 (원본 시 반환)", flush=True)
+                            print(
+                                "[API] 프롬프트 옵션 없음 → Gemini 개선 생략 (원본 시 반환)",
+                                flush=True,
+                            )
                         return raw_poem
-                
+
                 poem = await asyncio.wait_for(
                     loop.run_in_executor(executor, generate_with_trained_model),
-                    timeout=300.0
+                    timeout=300.0,
                 )
             else:
-                # 기본 모델 사용
-                print("[API] 기본 모델로 시 생성 중... (속도 최적화: 80토큰)", flush=True)
+                # =============================
+                # 3-B) 기본 모델 사용 (SOLAR / koGPT2)
+                #  → generate_poem_from_keywords 안에서
+                #     프롬프트 구성 + SOLAR 호출 + 후처리 + (필요 시 번역)까지 수행
+                # =============================
+                print(
+                    "[API] 기본 모델로 시 생성 중... (max_new_tokens=80)",
+                    flush=True,
+                )
                 poem = await asyncio.wait_for(
                     loop.run_in_executor(
-                        executor, 
-                        generate_poem_from_keywords, 
-                        final_keywords, 
-                        mood, 
-                        lines, 
-                        80, 
+                        executor,
+                        generate_poem_from_keywords,
+                        final_keywords,
+                        mood,
+                        lines,
+                        80,
                         text,
                         request.banned_words,
                         request.use_rhyme,
                         request.acrostic,
-                        request.model_type  # 모델 타입 전달
+                        request.model_type,  # "solar" (Colab) 또는 "kogpt2"
                     ),
-                    timeout=300.0  # 5분 타임아웃 (첫 요청 시 모델 로딩 + 생성 + 번역 시간 포함)
+                    timeout=300.0,
                 )
+
         print(f"[API] ✓ 시 생성 완료 (길이 {len(poem)}자)", flush=True)
     except asyncio.TimeoutError:
         print("[API] ❌ 타임아웃(>300s)", flush=True)
-        raise HTTPException(status_code=504, detail="시 생성 시간이 초과되었습니다 (5분). 첫 요청은 모델 로딩으로 더 오래 걸릴 수 있습니다. 잠시 후 다시 시도해 주세요.")
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "시 생성 시간이 초과되었습니다 (5분). "
+                "첫 요청은 모델 로딩으로 더 오래 걸릴 수 있습니다. 잠시 후 다시 시도해 주세요."
+            ),
+        )
     except Exception as e:
         error_type = type(e).__name__
         msg = str(e) or "시 생성 중 오류가 발생했습니다."
         print(f"[API] ❌ 생성 예외: {error_type}: {msg}")
         import traceback
+
         print("[API] 전체 트레이스백:")
         traceback.print_exc()
-        
-        # 더 구체적인 에러 메시지 제공
+
         if "메모리" in msg or "memory" in msg.lower() or "cuda" in msg.lower():
             detail_msg = f"GPU 메모리 부족 또는 CUDA 오류입니다. {msg[:200]}"
         elif "생성하지 않았습니다" in msg or "비어있습니다" in msg:
             detail_msg = f"모델이 텍스트를 생성하지 못했습니다. {msg[:200]}"
         else:
             detail_msg = f"시 생성 중 오류가 발생했습니다: {msg[:200]}"
-        
+
         raise HTTPException(status_code=500, detail=detail_msg)
 
-    # 4) 검증(아주 관대)
+    # 4) 최종 검증 (아주 관대)
     poem_clean = (poem or "").strip()
     if not poem_clean:
         print("[API] ❌ 최종 결과 빈 문자열")
-        raise HTTPException(status_code=500, detail="시 생성에 실패했습니다. 생성된 내용이 없습니다.")
+        raise HTTPException(
+            status_code=500,
+            detail="시 생성에 실패했습니다. 생성된 내용이 없습니다.",
+        )
 
-    # 한글 문자가 3자 이상이면 통과
-    korean_chars = sum(1 for c in poem_clean if ord('가') <= ord(c) <= ord('힣'))
+    korean_chars = sum(1 for c in poem_clean if ord("가") <= ord(c) <= ord("힣"))
     print(f"[API] 최종 검증: 길이={len(poem_clean)}자, 한글문자={korean_chars}자")
     if korean_chars < 3 and len(poem_clean) < 3:
-        raise HTTPException(status_code=500, detail="시 생성에 실패했습니다. 생성된 내용이 너무 짧습니다.")
+        raise HTTPException(
+            status_code=500,
+            detail="시 생성에 실패했습니다. 생성된 내용이 너무 짧습니다.",
+        )
 
     print(f"[API] 전체 처리 시간: {time.time() - t0:.2f}s")
-    print("="*80)
+    print("=" * 80)
 
     return PoemResponse(
         keywords=keywords,
@@ -426,53 +497,52 @@ async def generate_poem_from_text(request: PoemRequest):
         message="시가 성공적으로 생성되었습니다.",
     )
 
+
+# ============================
+# Gemini 기반 시 개선 / 감정 스토리
+# ============================
+
 def improve_poem_with_gemini(
-    raw_poem: str, 
+    raw_poem: str,
     original_prose: str = "",
     lines: Optional[int] = None,
     mood: Optional[str] = None,
     required_keywords: Optional[List[str]] = None,
     banned_words: Optional[List[str]] = None,
     use_rhyme: Optional[bool] = False,
-    acrostic: Optional[str] = None
+    acrostic: Optional[str] = None,
 ) -> str:
     """
     Gemini API를 사용하여 koGPT2로 생성한 시를 개선합니다.
-    - 불필요한 텍스트 제거 (뉴스 스타일 문장 등)
-    - 산문 필터링
-    - 줄바꿈 개선
-    - 시적 표현 개선
-    - 프롬프트 옵션 적용 (줄 수, 분위기, 필수 키워드, 금칙어 등)
+    (SOLAR + 번역 파이프라인과는 독립적인 옵션 기능)
     """
     try:
         import google.generativeai as genai
-        
-        # API 키 확인
+
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             print("[Gemini] ⚠️ GEMINI_API_KEY가 설정되지 않았습니다. 원본 시 반환")
             return raw_poem
-        
+
         genai.configure(api_key=api_key)
-        
-        # 사용 가능한 모델 찾기
+
         try:
             print("[Gemini] 사용 가능한 모델 목록 확인 중...", flush=True)
             available_models = []
             for model_info in genai.list_models():
-                if 'generateContent' in model_info.supported_generation_methods:
+                if "generateContent" in model_info.supported_generation_methods:
                     available_models.append(model_info.name)
-            
+
             print(f"[Gemini] 사용 가능한 모델 {len(available_models)}개 발견", flush=True)
-            
+
             preferred_models = [
-                'models/gemini-2.5-flash',
-                'models/gemini-2.5-flash-lite-preview-06-17',
-                'models/gemini-1.5-flash',
-                'models/gemini-1.5-pro',
-                'models/gemini-pro',
+                "models/gemini-2.5-flash",
+                "models/gemini-2.5-flash-lite-preview-06-17",
+                "models/gemini-1.5-flash",
+                "models/gemini-1.5-pro",
+                "models/gemini-pro",
             ]
-            
+
             model = None
             selected_model_name = None
             for model_name in preferred_models:
@@ -480,59 +550,76 @@ def improve_poem_with_gemini(
                     try:
                         model = genai.GenerativeModel(model_name)
                         selected_model_name = model_name
-                        print(f"[Gemini] 모델 로드 성공: {model_name}", flush=True)
+                        print(
+                            f"[Gemini] 모델 로드 성공: {model_name}",
+                            flush=True,
+                        )
                         break
                     except Exception as e:
-                        print(f"[Gemini] 모델 {model_name} 로드 실패: {e}", flush=True)
+                        print(
+                            f"[Gemini] 모델 {model_name} 로드 실패: {e}",
+                            flush=True,
+                        )
                         continue
-            
+
             if model is None and available_models:
                 selected_model_name = available_models[0]
                 model = genai.GenerativeModel(selected_model_name)
-                print(f"[Gemini] 대체 모델 사용: {selected_model_name}", flush=True)
+                print(
+                    f"[Gemini] 대체 모델 사용: {selected_model_name}",
+                    flush=True,
+                )
             elif model is None:
                 print("[Gemini] 사용 가능한 모델을 찾을 수 없습니다. 원본 시 반환", flush=True)
                 return raw_poem
         except Exception as e:
             print(f"[Gemini] 모델 로드 실패: {e}, 원본 시 반환", flush=True)
             import traceback
+
             traceback.print_exc()
             return raw_poem
-        
-        # 프롬프트 옵션 구성
+
+        # 옵션 텍스트 구성
         option_parts = []
-        
         if lines is not None and lines != 4:
             option_parts.append(f"- 정확히 {lines}줄로 작성해주세요.")
-        
         if mood and mood.strip():
-            option_parts.append(f"- 분위기: {mood.strip()} (이 분위기를 시에 반영해주세요)")
-        
-        if required_keywords and len(required_keywords) > 0:
+            option_parts.append(
+                f"- 분위기: {mood.strip()} (이 분위기를 시에 반영해주세요)"
+            )
+        if required_keywords:
             kw_str = ", ".join(required_keywords)
-            option_parts.append(f"- 필수 키워드: {kw_str} (반드시 이 키워드들을 시에 포함해주세요)")
-        
-        if banned_words and len(banned_words) > 0:
+            option_parts.append(
+                f"- 필수 키워드: {kw_str} (반드시 이 키워드들을 시에 포함해주세요)"
+            )
+        if banned_words:
             banned_str = ", ".join(banned_words)
-            option_parts.append(f"- 금지 단어: {banned_str} (절대 사용하지 마세요)")
-        
+            option_parts.append(
+                f"- 금지 단어: {banned_str} (절대 사용하지 마세요)"
+            )
         if use_rhyme:
-            option_parts.append("- 운율을 사용해주세요 (비슷한 발음이나 반복되는 소리로 리듬감을 주세요)")
-        
+            option_parts.append(
+                "- 운율을 사용해주세요 (비슷한 발음이나 반복되는 소리로 리듬감을 주세요)"
+            )
         if acrostic and acrostic.strip():
             acrostic_chars = " ".join(list(acrostic.strip()))
-            option_parts.append(f"- 두문자 시: 각 줄의 첫 글자가 '{acrostic_chars}' 순서대로 오도록 해주세요 (총 {len(acrostic.strip())}줄)")
-        
+            option_parts.append(
+                f"- 두문자 시: 각 줄의 첫 글자가 '{acrostic_chars}' 순서대로 오도록 해주세요 "
+                f"(총 {len(acrostic.strip())}줄)"
+            )
+
         options_text = "\n".join(option_parts) if option_parts else ""
-        
+
         if options_text:
-            print(f"[Gemini] 프롬프트 옵션 적용: {len(option_parts)}개 옵션", flush=True)
+            print(
+                f"[Gemini] 프롬프트 옵션 적용: {len(option_parts)}개 옵션",
+                flush=True,
+            )
             for i, opt in enumerate(option_parts, 1):
                 print(f"[Gemini]   {i}. {opt}", flush=True)
         else:
             print("[Gemini] 프롬프트 옵션 없음 (기본 개선만 수행)", flush=True)
-        
-        # 프롬프트 생성 (불필요한 텍스트 제거 및 시적 표현 개선)
+
         prompt = f"""다음은 AI가 생성한 한국어 시입니다. 이 시를 개선해주세요.
 
 원본 산문 (참고용):
@@ -552,36 +639,50 @@ def improve_poem_with_gemini(
 
 개선된 시만 출력해주세요. 설명이나 추가 텍스트 없이 시만 출력하세요.
 """
-        
-        print(f"[Gemini] 프롬프트 전송 중... (원본 시 길이: {len(raw_poem)}자)", flush=True)
+
+        print(
+            f"[Gemini] 프롬프트 전송 중... (원본 시 길이: {len(raw_poem)}자)",
+            flush=True,
+        )
         response = model.generate_content(prompt)
-        
-        # 응답 파싱 (다양한 형식 지원)
+
         improved_poem = ""
-        if hasattr(response, 'text'):
+        if hasattr(response, "text"):
             improved_poem = response.text.strip()
-        elif hasattr(response, 'candidates') and len(response.candidates) > 0:
-            if hasattr(response.candidates[0], 'content'):
-                if hasattr(response.candidates[0].content, 'parts'):
-                    improved_poem = ''.join([part.text for part in response.candidates[0].content.parts if hasattr(part, 'text')]).strip()
-        
+        elif getattr(response, "candidates", None):
+            c0 = response.candidates[0]
+            if getattr(c0, "content", None) and getattr(c0.content, "parts", None):
+                improved_poem = "".join(
+                    [p.text for p in c0.content.parts if hasattr(p, "text")]
+                ).strip()
+
         print(f"[Gemini] 응답 받음: {len(improved_poem)}자", flush=True)
         if improved_poem:
-            print(f"[Gemini] 응답 미리보기 (처음 100자): {improved_poem[:100]}", flush=True)
-        
-        # 결과 검증
+            print(
+                f"[Gemini] 응답 미리보기 (처음 100자): {improved_poem[:100]}",
+                flush=True,
+            )
+
         if improved_poem and len(improved_poem) > 10:
-            print(f"[Gemini] 시 개선 완료: {len(raw_poem)}자 → {len(improved_poem)}자", flush=True)
+            print(
+                f"[Gemini] 시 개선 완료: {len(raw_poem)}자 → {len(improved_poem)}자",
+                flush=True,
+            )
             return improved_poem
         else:
-            print(f"[Gemini] 개선 결과가 비어있거나 너무 짧음 ({len(improved_poem)}자). 원본 시 반환", flush=True)
+            print(
+                f"[Gemini] 개선 결과가 비어있거나 너무 짧음 ({len(improved_poem)}자). 원본 시 반환",
+                flush=True,
+            )
             return raw_poem
-        
+
     except Exception as e:
         print(f"[Gemini] 시 개선 중 오류 발생: {e}")
         import traceback
+
         traceback.print_exc()
-        return raw_poem  # 오류 발생 시 원본 반환
+        return raw_poem
+
 
 def analyze_emotions_cutely(poems: List[Dict]) -> Dict[str, str]:
     """
@@ -589,8 +690,7 @@ def analyze_emotions_cutely(poems: List[Dict]) -> Dict[str, str]:
     """
     try:
         import google.generativeai as genai
-        
-        # API 키 확인
+
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             print("[Gemini] ⚠️ GEMINI_API_KEY가 설정되지 않았습니다.")
@@ -599,32 +699,28 @@ def analyze_emotions_cutely(poems: List[Dict]) -> Dict[str, str]:
                 "summary": "API 키가 필요합니다.",
                 "emoji": "🔑",
                 "message": "설정에서 API 키를 추가해주세요.",
-                "success": False
+                "success": False,
             }
-        
+
         genai.configure(api_key=api_key)
-        
-        # 사용 가능한 모델 목록 확인 및 적절한 모델 선택
+
         try:
-            # 먼저 사용 가능한 모델 목록 확인
             available_models = []
             for model_info in genai.list_models():
-                if 'generateContent' in model_info.supported_generation_methods:
+                if "generateContent" in model_info.supported_generation_methods:
                     available_models.append(model_info.name)
-            
-            print(f"[Gemini] 사용 가능한 모델: {available_models[:5]}")  # 처음 5개만 출력
-            
-            # 우선순위: 안정적인 모델부터 시도
+
+            print(f"[Gemini] 사용 가능한 모델: {available_models[:5]}")
+
             preferred_models = [
-                'models/gemini-2.5-flash',  # 가장 안정적인 최신 모델
-                'models/gemini-2.5-flash-lite-preview-06-17',
-                'models/gemini-1.5-flash',
-                'models/gemini-1.5-pro',
-                'models/gemini-pro',
+                "models/gemini-2.5-flash",
+                "models/gemini-2.5-flash-lite-preview-06-17",
+                "models/gemini-1.5-flash",
+                "models/gemini-1.5-pro",
+                "models/gemini-pro",
             ]
-            
+
             model = None
-            # 우선순위 모델 시도
             for model_name in preferred_models:
                 if model_name in available_models:
                     try:
@@ -634,48 +730,42 @@ def analyze_emotions_cutely(poems: List[Dict]) -> Dict[str, str]:
                     except Exception as e:
                         print(f"[Gemini] 모델 {model_name} 시도 실패: {e}")
                         continue
-            
-            # 우선순위 모델이 모두 실패하면 사용 가능한 모델 중 첫 번째 사용
+
             if model is None:
                 if available_models:
-                    # 'models/gemini-xxx' 형식에서 'gemini-xxx'만 추출
                     first_model = available_models[0]
                     print(f"[Gemini] 사용 가능한 첫 번째 모델 사용: {first_model}")
                     model = genai.GenerativeModel(first_model)
                 else:
                     raise Exception("사용 가능한 모델을 찾을 수 없습니다.")
-                    
+
         except Exception as e:
             print(f"[Gemini] 모델 목록 확인 실패, 기본 모델 시도: {e}")
-            # 기본 모델 시도 (fallback)
             try:
-                model = genai.GenerativeModel('models/gemini-2.5-flash')
-            except:
+                model = genai.GenerativeModel("models/gemini-2.5-flash")
+            except Exception:
                 try:
-                    model = genai.GenerativeModel('models/gemini-1.5-flash')
-                except:
+                    model = genai.GenerativeModel("models/gemini-1.5-flash")
+                except Exception:
                     raise Exception(f"모델을 로드할 수 없습니다. 오류: {e}")
-        
-        # 감정 데이터 정리
-        emotion_data = {}
+
+        # 감정 데이터 집계
+        emotion_data: Dict[str, Dict[str, int]] = {}
         for poem in poems:
-            if not poem.get('emotion') or not poem.get('createdAt'):
+            if not poem.get("emotion") or not poem.get("createdAt"):
                 continue
-            emotion = poem['emotion']
-            date = poem['createdAt'][:10]  # YYYY-MM-DD
-            
+            emotion = poem["emotion"]
+            date = poem["createdAt"][:10]
             if date not in emotion_data:
                 emotion_data[date] = {}
             emotion_data[date][emotion] = emotion_data[date].get(emotion, 0) + 1
-        
-        # 감정별 총 개수
-        emotion_counts = {}
+
+        emotion_counts: Dict[str, int] = {}
         for poem in poems:
-            if poem.get('emotion'):
-                emotion = poem['emotion']
+            if poem.get("emotion"):
+                emotion = poem["emotion"]
                 emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
-        
-        # 프롬프트 생성
+
         prompt = f"""당신은 감정 분석 전문가입니다. 다음 감정 데이터를 자연스럽고 따뜻한 톤으로 분석해주세요.
 
 감정 데이터:
@@ -686,7 +776,7 @@ def analyze_emotions_cutely(poems: List[Dict]) -> Dict[str, str]:
 
 다음 형식으로 응답해주세요:
 
-1. 감정 추이 스토리 (100-150자): 날짜별 감정 변화를 자연스럽게 설명해주세요. 예: "이번 주는 기쁨이 많이 나타났습니다. 월요일부터 기쁨이 증가하기 시작했고..."
+1. 감정 추이 스토리 (100-150자): 날짜별 감정 변화를 자연스럽게 설명해주세요.
 2. 감정 요약 (50-80자): 전체적인 감정 패턴을 간결하게 요약해주세요.
 3. 대표 이모지: 가장 많이 나타난 감정에 맞는 이모지 하나
 4. 따뜻한 메시지 (30-50자): 사용자에게 전하는 자연스러운 메시지
@@ -702,70 +792,70 @@ def analyze_emotions_cutely(poems: List[Dict]) -> Dict[str, str]:
 이모지: [여기에 이모지]
 메시지: [여기에 메시지]
 """
-        
+
         response = model.generate_content(prompt)
         result_text = response.text
-        
-        # 응답 파싱
+
         story = ""
         summary = ""
         emoji = "💭"
         message = ""
-        
-        lines = result_text.split('\n')
-        for line in lines:
-            if line.startswith('스토리:'):
-                story = line.replace('스토리:', '').strip()
-            elif line.startswith('요약:'):
-                summary = line.replace('요약:', '').strip()
-            elif line.startswith('이모지:'):
-                emoji = line.replace('이모지:', '').strip()
-            elif line.startswith('메시지:'):
-                message = line.replace('메시지:', '').strip()
-        
-        # 파싱 실패 시 기본값
+
+        for line in result_text.split("\n"):
+            line = line.strip()
+            if line.startswith("스토리:"):
+                story = line.replace("스토리:", "").strip()
+            elif line.startswith("요약:"):
+                summary = line.replace("요약:", "").strip()
+            elif line.startswith("이모지:"):
+                emoji = line.replace("이모지:", "").strip()
+            elif line.startswith("메시지:"):
+                message = line.replace("메시지:", "").strip()
+
         if not story:
             story = result_text[:150] if result_text else "감정 데이터를 분석했어요!"
         if not summary:
             summary = "감정 변화를 확인했어요."
         if not message:
             message = "오늘도 수고하셨어요!"
-        
+
         return {
             "story": story,
             "summary": summary,
             "emoji": emoji,
             "message": message,
-            "success": True
+            "success": True,
         }
-        
+
     except Exception as e:
         print(f"[Gemini] ❌ 오류 발생: {e}")
         import traceback
+
         traceback.print_exc()
         return {
             "story": "감정 분석 중 오류가 발생했어요. 다시 시도해주세요.",
             "summary": "오류 발생",
             "emoji": "😢",
             "message": "잠시 후 다시 시도해주세요.",
-            "success": False
+            "success": False,
         }
+
 
 @app.post("/api/emotion/analyze-cute", response_model=EmotionAnalysisResponse)
 async def analyze_emotions_cutely_endpoint(request: EmotionAnalysisRequest):
     """
     감정 데이터를 받아서 Gemini API로 귀여운 스토리로 변환합니다.
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("[API] /api/emotion/analyze-cute 진입")
     print(f"[API] 시 개수: {len(request.poems)}개")
-    
+
     if not request.poems:
         raise HTTPException(status_code=400, detail="시 데이터가 없습니다.")
-    
+
     result = analyze_emotions_cutely(request.poems)
-    
-    print(f"[API] ✓ 감정 분석 완료")
-    print("="*80)
-    
+
+    print("[API] ✓ 감정 분석 완료")
+    print("=" * 80)
+
     return EmotionAnalysisResponse(**result)
