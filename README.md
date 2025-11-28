@@ -150,9 +150,17 @@ AI 모델이 비한국어로 시를 생성한 경우, Google Cloud Translation A
 
 ![koGPT2 시 생성 2](./images/siot_gpt_generator_2.png)
 
-### 5. 감정 추이 시각화 및 보관함
+### 5. 보관함
 
-상단 메뉴에서 EmotionTrend 페이지로 이동하면 생성한 시들의 감정 데이터를 시각화하여 볼 수 있습니다. Archive 페이지에서는 지금까지 생성하고 저장한 모든 시를 시간순으로 볼 수 있습니다.
+Archive 페이지에서는 지금까지 생성하고 저장한 모든 시를 시간순으로 볼 수 있습니다. 생성된 시를 수정하거나 삭제할 수 있습니다.
+
+![보관함 화면](./images/siot_archieve.png)
+
+![시 상세 화면](./images/siot_detail.png)
+
+### 6. 감정 추이 시각화
+
+상단 메뉴에서 EmotionTrend 페이지로 이동하면 생성한 시들의 감정 데이터를 시각화하여 볼 수 있습니다. 최근 7일 감정 추이, 감정 분포, 감정 신뢰도 분포 등 다양한 차트를 통해 시간에 따른 감정 변화를 한눈에 확인할 수 있습니다.
 
 ![감정 추이 시각화 1](./images/siot_mood_1.png)
 
@@ -160,7 +168,7 @@ AI 모델이 비한국어로 시를 생성한 경우, Google Cloud Translation A
 
 ![감정 추이 시각화 3](./images/siot_mood_3.png)
 
-### 6. 설정
+### 7. 설정
 
 Settings 페이지에서는 기본 모델 선택, 자동 저장 기능, 데이터 관리 등의 설정을 변경할 수 있습니다. 기본 모델을 선택하면 다음 시 생성 시 자동으로 해당 모델이 선택되며, 자동 저장 기능을 활성화하면 시 생성 시 자동으로 보관함에 저장됩니다.
 
@@ -588,7 +596,6 @@ POEM_MODEL_TYPE=kogpt2
 - 폴더 이름에 제한이 없으며, 어떤 이름이어도 자동으로 인식됩니다
 ---
    
- 📄 API·외부 서비스 전체 가이드는 [`docs/API.md`](docs/API.md)를 참고하세요. Google Cloud Translation, Gemini, ngrok/Colab 연동, cURL 예시는 해당 문서에서 관리됩니다.
 
 ## ☆ 사용 모델 상세
 
@@ -800,8 +807,6 @@ npm install   # 최초 1회
 npm run dev   # http://localhost:5173
 ```
 
-
-
 ## Google Colab에서 실행
 
 `GPU_backend.ipynb` 파일을 Google Colab에서 불러오고 실행하면 됩니다.
@@ -811,25 +816,11 @@ npm run dev   # http://localhost:5173
 - `--host 0.0.0.0`: 외부 접근 허용
 - `--port 8000`: 기본 포트 (변경 가능)
 
-## 서버 실행 로그 예시
-```
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [12345] using WatchFiles
-INFO:     Started server process [12346]
-INFO:     Waiting for application startup.
-[Config] .env 파일 로드됨: /path/to/.env
-[Model] 모델 로딩 중...
-[Model] koGPT2 모델 로딩 완료
-[Model] 학습된 모델 찾기: backend/trained_models/
-[Model] 학습된 모델 로드 완료: backend/trained_models/20251109_08...
-INFO:     Application startup complete.
-```
-
 ## ☆ API 문서
 
 API 엔드포인트, 환경 변수 설정, 외부 서비스 연동에 대한 상세 내용은 [`docs/API.md`](docs/API.md)를 참고하세요.
 
-## 아쉬운 점
+## ☆ 아쉬운 점
 
 ### 수치적 성능 평가 부재
 
