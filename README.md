@@ -101,8 +101,6 @@
 
 ![시작 화면](./images/siot_start.png)
 
-<img src="./images/siot_start.gif" alt="시작 화면 GIF" width="100%" />
-
 ### 2. 입력 및 모델 선택
 
 오늘 하루 있었던 일을 간단히 적어봅니다. 입력이 비어있으면 버튼이 비활성화되어 입력 검증이 이루어집니다. SOLAR 모델은 GPU 환경에서 더 고품질의 시를 생성하는 모델이고, koGPT2는 CPU 환경에서 사용할 수 있는 모델입니다.
