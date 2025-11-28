@@ -114,9 +114,16 @@ AI 모델이 비한국어로 시를 생성한 경우, Google Cloud Translation A
 
 시옷은 일기를 시로 변환하는 웹 애플리케이션입니다. 메인 화면인 PoemGeneration 페이지에서는 상단에 SOLAR와 koGPT2 두 가지 모델을 선택할 수 있는 버튼이 있고, 아래에는 일상을 입력할 수 있는 텍스트 영역이 있습니다.
 
+<div style="display: flex; gap: 10px;">
+  <img src="./images/siot_start.png" alt="시작 화면" width="48%" />
+  <img src="./images/siot_start.gif" alt="시작 화면 GIF" width="48%" />
+</div>
+
 ### 2. 입력 및 모델 선택
 
 오늘 하루 있었던 일을 간단히 적어봅니다. 입력이 비어있으면 버튼이 비활성화되어 입력 검증이 이루어집니다. SOLAR 모델은 GPU 환경에서 더 고품질의 시를 생성하는 모델이고, koGPT2는 CPU 환경에서 사용할 수 있는 모델입니다.
+
+![입력 및 모델 선택](./images/siot_generator.png)
 
 ### 3. 시 생성 과정
 
@@ -124,13 +131,44 @@ AI 모델이 비한국어로 시를 생성한 경우, Google Cloud Translation A
 
 백엔드에서는 입력된 텍스트를 분석하여 키워드를 추출하고, 감정을 분류한 다음, AI 모델이 시를 생성합니다. 추출된 키워드와 분류된 감정은 시 생성 프롬프트에 포함되어 최종 시의 내용과 분위기에 반영됩니다.
 
+**SOLAR 모델 사용 시:**
+
+![SOLAR 시 생성 1](./images/siot_solar_generator_1.png)
+
+**학습된 koGPT2 모델 사용 시:**
+
+![koGPT2 시 생성 1](./images/siot_gpt_generator_1.png)
+
 ### 4. 결과 확인
 
 시가 생성되면 화면에 여러 정보가 카드 형태로 표시됩니다. 생성된 시 본문이 가장 위에 표시되고, 그 아래에는 감정 분석 결과가 나타납니다. 추출된 키워드들도 함께 보여지며, 각 키워드는 시 생성 시 프롬프트에 포함되어 시의 내용에 반영됩니다. 이 시는 자동으로 브라우저의 localStorage에 저장되며, 필요하면 "보관함에 저장" 버튼을 눌러 수동으로도 저장할 수 있습니다.
 
+<div style="display: flex; gap: 10px;">
+  <div style="flex: 1;">
+    <strong>SOLAR 모델 결과:</strong>
+    <img src="./images/siot_solar_generator_2.png" alt="SOLAR 시 생성 2" width="100%" />
+  </div>
+  <div style="flex: 1;">
+    <strong>학습된 koGPT2 모델 결과:</strong>
+    <img src="./images/siot_gpt_generator_2.png" alt="koGPT2 시 생성 2" width="100%" />
+  </div>
+</div>
+
 ### 5. 감정 추이 시각화 및 보관함
 
-상단 메뉴에서 EmotionTrend 페이지로 이동하면 생성한 시들의 감정 데이터를 시각화하여 볼 수 있습니다. Archive 페이지에서는 지금까지 생성하고 저장한 모든 시를 시간순으로 볼 수 있으며, Settings 페이지에서는 기본 모델 선택이나 자동 저장 기능을 설정할 수 있습니다.
+상단 메뉴에서 EmotionTrend 페이지로 이동하면 생성한 시들의 감정 데이터를 시각화하여 볼 수 있습니다. Archive 페이지에서는 지금까지 생성하고 저장한 모든 시를 시간순으로 볼 수 있습니다.
+
+![감정 추이 시각화 1](./images/siot_mood_1.png)
+
+![감정 추이 시각화 2](./images/siot_mood_2.png)
+
+![감정 추이 시각화 3](./images/siot_mood_3.png)
+
+### 6. 설정
+
+Settings 페이지에서는 기본 모델 선택, 자동 저장 기능, 데이터 관리 등의 설정을 변경할 수 있습니다. 기본 모델을 선택하면 다음 시 생성 시 자동으로 해당 모델이 선택되며, 자동 저장 기능을 활성화하면 시 생성 시 자동으로 보관함에 저장됩니다.
+
+![설정 화면](./images/siot_setting.png)
 
 ## 기술적 특징
 
@@ -547,6 +585,17 @@ POEM_MODEL_TYPE=kogpt2
 
 > **팁**: 로컬 개발 시 `POEM_MODEL_TYPE=kogpt2`를 설정하면 GPU가 있어도 koGPT2로 빠르게 테스트할 수 있습니다.  
 > **참고**: 환경 변수를 설정하지 않으면 자동으로 GPU/CPU를 감지해 적절한 모델을 선택합니다. SOLAR는 GPU가 필요하며, koGPT2는 CPU에서도 실행 가능합니다.
+
+### 학습된 모델 경로 설정
+
+파인튜닝된 koGPT2 모델을 사용하려면 `backend/trained_models/` 폴더에 학습된 모델을 배치하면 자동으로 로드됩니다.
+
+**자동 로드 방식**:
+- `backend/trained_models/` 폴더에 학습된 모델 폴더를 배치
+- 시스템이 자동으로 폴더 내 모든 디렉토리를 탐색하여 가장 최근에 수정된 모델을 자동으로 로드
+- 폴더 이름에 제한이 없으며, 어떤 이름이어도 자동으로 인식됩니다
+
+> **참고**: 학습된 모델이 없으면 기본 koGPT2 모델을 사용합니다. 학습된 모델 사용 시 프론트엔드에서 "koGPT2 (CPU)" 옵션을 선택하면 자동으로 로드됩니다.
 
 > 📄 API·외부 서비스 전체 가이드는 [`docs/API.md`](docs/API.md)를 참고하세요. Google Cloud Translation, Gemini, ngrok/Colab 연동, cURL 예시는 해당 문서에서 관리됩니다.
 
