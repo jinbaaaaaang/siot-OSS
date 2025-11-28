@@ -354,34 +354,34 @@ siot-OSS/
 ```mermaid
 graph TB
     subgraph Frontend["프론트엔드 레이어 (React + Vite)"]
-        PG[PoemGeneration<br/>시 생성]
-        ET[EmotionTrend<br/>감정 시각화]
-        AR[Archive<br/>보관함]
-        ST[Settings<br/>설정]
-        LS[(localStorage<br/>시 데이터, 설정)]
+        PG["PoemGeneration\n시 생성"]
+        ET["EmotionTrend\n감정 시각화"]
+        AR["Archive\n보관함"]
+        ST["Settings\n설정"]
+        LS[("localStorage\n시 데이터, 설정")]
     end
     
     subgraph Backend["백엔드"]
         subgraph Local["로컬 백엔드"]
-            LB[localhost:8000<br/>koGPT2]
+            LB["localhost:8000\nkoGPT2"]
         end
         
         subgraph Colab["Colab GPU 백엔드"]
-            NG[ngrok 터널<br/>공개 URL]
-            GC[Google Colab<br/>GPU 런타임<br/>FastAPI 서버]
-            SOLAR[SOLAR 모델]
+            NG["ngrok 터널\n공개 URL"]
+            GC["Google Colab\nGPU 런타임\nFastAPI 서버"]
+            SOLAR["SOLAR 모델"]
         end
         
         subgraph API["백엔드 API 레이어"]
-            FA[FastAPI 애플리케이션]
-            EP1[/api/poem/generate]
-            EP2[/api/emotion/analyze-cute]
+            FA["FastAPI 애플리케이션"]
+            EP1["/api/poem/generate"]
+            EP2["/api/emotion/analyze-cute"]
         end
         
         subgraph Services["서비스 레이어"]
-            AI[AI 모델<br/>SOLAR / koGPT2]
-            EXT[외부 API<br/>Gemini API<br/>Google Translation]
-            DATA[데이터 처리<br/>TF-IDF<br/>XNLI<br/>후처리]
+            AI["AI 모델\nSOLAR / koGPT2"]
+            EXT["외부 API\nGemini API\nGoogle Translation"]
+            DATA["데이터 처리\nTF-IDF\nXNLI\n후처리"]
         end
     end
     
@@ -872,13 +872,6 @@ API 엔드포인트, 환경 변수 설정, 외부 서비스 연동에 대한 상
 
 
 ## ☆ 추가 자료
-
-### 관련 문서
-
-- [백엔드 서버 가이드](backend/BACKEND_SERVER_GUIDE.md)
-- [Colab 사용 가이드](COLAB_GUIDE.md)
-- [Google Cloud 설정 가이드](GOOGLE_CLOUD_SETUP_GUIDE.md)
-
 ### 외부 링크
 
 - [FastAPI 공식 문서](https://fastapi.tiangolo.com/)
